@@ -1,13 +1,14 @@
 // Use Arduino servo library to control the ESC speed controller
 #include <Servo.h>
 
-/*********************
+/****************************
  * TEST & CIRCUIT PARAMETERS
- *********************/
+ ****************************/
 
 // Test parameters
 int NUM_TEST_POINTS = 5;
-int STABILIZATION_DELAY = 2000; // milliseconds
+long STEP_DURATION = 2000; // milliseconds
+int SAMPLE_FREQUENCY = 3; // samples per step
 
 // Arduino parameters
 float ARDUINO_VOLT_PER_DIV = (5.0/1023.0);
@@ -17,6 +18,7 @@ int LOAD_CELL_ANALOG_PIN = 0;
 // Load cell parameters
 float LOAD_CELL_LB_PER_VOLT = (50.0 / 4.0);
 float LOAD_CELL_VOLT_OFFSET = 0.5;
+float LOAD_CELL_FORCE_OFFSET = -0.14; // Initial force on the load cell
 
 // Thruster PWM values
 int STOP = 1500;
@@ -24,86 +26,165 @@ int MAX_PWM = 1900;
 int MIN_PWM = 1100;
 
 
-/*********************
+/*************
  * VARIABLES
- *********************/
+ *************/
 
 // Serial variables
 int SERIAL_BAUD_RATE = 9600;
+char START_BYTES = '$';
+char END_BYTES = '!';
 
 int currentPWM = STOP;
 int deltaPWM;
 bool forwardThrust = true;
-int testRunning = false;
+bool testRunning = false;
+bool awaitingStart = true;
+
+// Timing variables
+long testStartMillis;
+long testEndMillis;
+long stepStartMillis;
+long lastStepEndMillis;
+long lastSampleTime;
+long sampleTime;
+
+// Switch Debounce Vars
+int counter = 0;       // how many times we have seen new value
+int reading;           // the current value read from the input pin
+int currentStartSwitch = LOW;    // the debounced input value
+
+long debounceTime = 0;         // the last time the output pin was sampled
+int debounceCount = 10; // number of millis/samples to consider before declaring a debounced input
 
 // Function prototypes
-int16_t valid(int16_t pwm);
+void readAndLog();
+void testThruster();
+void resetTest();
+bool readStartSwitchDebounced();
 
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   deltaPWM = (MAX_PWM - STOP) / NUM_TEST_POINTS;
+  sampleTime = STEP_DURATION / SAMPLE_FREQUENCY;
 
   // Setup start switch
   pinMode(START_SWITCH_PIN, INPUT);
 }
 
 void loop(){
-  // Check for running switch
-  if (digitalRead(START_SWITCH_PIN)) {
-    testRunning = true;
-  } else {
-    // Send STOP to thruster
-    
-    // Reset the test
-    testRunning = false;
-    forwardThrust = true;
-    currentPWM = STOP;
-  }
-     
-  if (testRunning) {
-    // Run thruster
+  bool startSwitch = readStartSwitchDebounced();
+  if (awaitingStart) {
+    if (startSwitch) {
+      awaitingStart = false;
 
-    // Delay for force to stabilize
-    delay(STABILIZATION_DELAY);
-    
-    // Read force
-    
-    int senseValue = analogRead(LOAD_CELL_ANALOG_PIN);
-    
-    // Kill thruster
-    
-    // Log PWM and force
-    
-    float loadCellVoltage = senseValue * ARDUINO_VOLT_PER_DIV;
-    float loadCellForce = (loadCellVoltage - LOAD_CELL_VOLT_OFFSET) * LOAD_CELL_LB_PER_VOLT;
-    Serial.println(currentPWM);
-    Serial.println(loadCellForce);
-    Serial.println(); 
+      // Send start signal
+      Serial.println(START_BYTES);
 
-    // Delay for stabilization
-    delay(STABILIZATION_DELAY);
-    
-    // Move to next PWM
-    if (currentPWM >= MAX_PWM) {
-      forwardThrust = false;
-      currentPWM = STOP;
-    } else if (currentPWM <= MIN_PWM) {
-      currentPWM = STOP;
+      testRunning = true;
+      testStartMillis = millis();
+      lastStepEndMillis = testStartMillis;
+
+    }
+  } 
+  else if (testRunning) {
+    if (!startSwitch) {
+      // Send STOP to thruster
+
+      // Send end bytes
+      Serial.println(END_BYTES);
       testRunning = false;
-    } else if (forwardThrust) {
-      currentPWM += deltaPWM;
-    } else {
-      currentPWM -= deltaPWM;
-    } 
+      resetTest();
+    }
+  } 
+  else if (!awaitingStart) {
+    if (!startSwitch) {
+      awaitingStart = true;
+    }
+  }
+
+  if (testRunning) {
+    testThruster(millis());
   }
 }
 
-// Ensure MIN_PWM <= pwm <= MAX_PWM
-int16_t valid(int16_t pwm)
-{
-  pwm = pwm > MAX_PWM ? MAX_PWM : pwm;
-  pwm = pwm < MIN_PWM ? MIN_PWM : pwm;
-  return pwm;
+bool readStartSwitchDebounced() {
+  bool val = currentStartSwitch;
+  if(millis() != debounceTime)
+  {
+    reading = digitalRead(START_SWITCH_PIN);
+
+    if(reading == currentStartSwitch && counter > 0)
+    {
+      counter--;
+    }
+    if(reading != currentStartSwitch)
+    {
+      counter++; 
+    }
+    // If the Input has shown the same value for long enough let's switch it
+    if(counter >= debounceCount)
+    {
+      counter = 0;
+      currentStartSwitch = reading;
+      val = currentStartSwitch;
+    }
+    debounceTime = millis();
+  }
+  return val;
 }
 
+void resetTest() {
+  currentPWM = STOP;
+  forwardThrust = true;
+}
+
+void testThruster(long currentTime) {
+  // Is it time for a sample? If so, take a sample.
+  if (currentTime - lastSampleTime >= sampleTime) {
+    lastSampleTime = currentTime;
+    readAndLog(currentTime);
+  }
+
+  // Is it time to change the thrust? If so, change the thrust.
+  if (currentTime - lastStepEndMillis >= STEP_DURATION) {
+    lastStepEndMillis = currentTime;
+
+    // Move to next PWM
+    if (currentPWM >= MAX_PWM && forwardThrust) {
+      forwardThrust = false;
+    } 
+    else if (currentPWM <= MIN_PWM) {
+      testRunning = false;
+      testEndMillis = millis();
+      currentPWM = STOP;
+      forwardThrust = true;
+      Serial.println(END_BYTES);
+    }
+
+    if (forwardThrust) {
+      currentPWM += deltaPWM;
+    } 
+    else {
+      currentPWM -= deltaPWM;
+    }
+
+    // Write new PWM to ESC
+
+
+  }
+}
+
+// Logs the force and PWM at a given time
+void readAndLog(long time) {
+  // Read force
+  int senseValue = analogRead(LOAD_CELL_ANALOG_PIN);
+
+  // Log PWM and force
+  float loadCellVoltage = senseValue * ARDUINO_VOLT_PER_DIV;
+  float loadCellForce = ((loadCellVoltage - LOAD_CELL_VOLT_OFFSET) * LOAD_CELL_LB_PER_VOLT) - LOAD_CELL_FORCE_OFFSET;
+  // Transmit data over serial
+  Serial.println(currentPWM);
+
+}
 
