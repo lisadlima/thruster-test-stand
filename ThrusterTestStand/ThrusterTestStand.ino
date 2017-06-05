@@ -184,7 +184,13 @@ void readAndLog(long time) {
   float loadCellVoltage = senseValue * ARDUINO_VOLT_PER_DIV;
   float loadCellForce = ((loadCellVoltage - LOAD_CELL_VOLT_OFFSET) * LOAD_CELL_LB_PER_VOLT) - LOAD_CELL_FORCE_OFFSET;
   // Transmit data over serial
-  Serial.println(currentPWM);
+  //char* data;
+  //sprintf(data, "%u, %d, %f", time, currentPWM, loadCellForce);
+  Serial.print(time);
+  Serial.print(',');
+  Serial.print(currentPWM);
+  Serial.print(',');
+  Serial.println(loadCellForce);
 
 }
 
