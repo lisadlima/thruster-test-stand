@@ -18,7 +18,7 @@ int LOAD_CELL_ANALOG_PIN = 0;
 // Load cell parameters
 float LOAD_CELL_LB_PER_VOLT = (50.0 / 4.0);
 float LOAD_CELL_VOLT_OFFSET = 0.5;
-float LOAD_CELL_FORCE_OFFSET = -0.14; // Initial force on the load cell
+float LOAD_CELL_FORCE_OFFSET = 21.57; // Initial force on the load cell
 
 // Thruster PWM values
 int STOP = 1500;
@@ -49,6 +49,9 @@ long lastStepEndMillis;
 long lastSampleTime;
 long sampleTime;
 
+Servo thruster;
+int THRUSTER_PIN = 9;
+
 // Switch Debounce Vars
 int counter = 0;       // how many times we have seen new value
 int reading;           // the current value read from the input pin
@@ -68,6 +71,10 @@ void setup() {
   deltaPWM = (MAX_PWM - STOP) / NUM_TEST_POINTS;
   sampleTime = STEP_DURATION / SAMPLE_FREQUENCY;
 
+  thruster.attach(THRUSTER_PIN);
+  thruster.writeMicroseconds(STOP);
+  delay(1000);
+
   // Setup start switch
   pinMode(START_SWITCH_PIN, INPUT);
 }
@@ -86,17 +93,18 @@ void loop(){
       lastStepEndMillis = testStartMillis;
 
     }
-  } 
+  }
   else if (testRunning) {
     if (!startSwitch) {
       // Send STOP to thruster
-
+      thruster.writeMicroseconds(STOP);
+      delay(1000);
       // Send end bytes
       Serial.println(END_BYTES);
       testRunning = false;
       resetTest();
     }
-  } 
+  }
   else if (!awaitingStart) {
     if (!startSwitch) {
       awaitingStart = true;
@@ -120,7 +128,7 @@ bool readStartSwitchDebounced() {
     }
     if(reading != currentStartSwitch)
     {
-      counter++; 
+      counter++;
     }
     // If the Input has shown the same value for long enough let's switch it
     if(counter >= debounceCount)
@@ -153,25 +161,26 @@ void testThruster(long currentTime) {
     // Move to next PWM
     if (currentPWM >= MAX_PWM && forwardThrust) {
       forwardThrust = false;
-    } 
+    }
     else if (currentPWM <= MIN_PWM) {
       testRunning = false;
       testEndMillis = millis();
       currentPWM = STOP;
+      thruster.writeMicroseconds(STOP);
+      delay(1000);
       forwardThrust = true;
       Serial.println(END_BYTES);
     }
 
-    if (forwardThrust) {
+    if (forwardThrust && testRunning) {
       currentPWM += deltaPWM;
-    } 
+    }
     else {
       currentPWM -= deltaPWM;
     }
 
     // Write new PWM to ESC
-
-
+    thruster.writeMicroseconds(currentPWM);
   }
 }
 
@@ -193,4 +202,3 @@ void readAndLog(long time) {
   Serial.println(loadCellForce);
 
 }
-
