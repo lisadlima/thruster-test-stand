@@ -1,6 +1,9 @@
 // Use Arduino servo library to control the ESC speed controller
 #include <Servo.h>
 
+// Use Arduino Wired library to get i2c information (current, voltage)
+#include <Wire.h>
+
 /****************************
  * TEST & CIRCUIT PARAMETERS
  ****************************/
@@ -14,6 +17,8 @@ int SAMPLE_FREQUENCY = 3; // samples per step
 float ARDUINO_VOLT_PER_DIV = (5.0/1023.0);
 int START_SWITCH_PIN = 2;
 int LOAD_CELL_ANALOG_PIN = 0;
+byte i2c_info = 0;
+float type_test = 7.5;
 
 // Load cell parameters
 float LOAD_CELL_LB_PER_VOLT = (50.0 / 4.0);
@@ -37,7 +42,8 @@ char END_BYTES = '!';
 
 int currentPWM = STOP;
 int deltaPWM;
-bool forwardThrust = true;
+bool increasePWM = true;
+bool lastCycle = false;
 bool testRunning = false;
 bool awaitingStart = true;
 
@@ -67,6 +73,7 @@ void resetTest();
 bool readStartSwitchDebounced();
 
 void setup() {
+  Wire.begin();        // start I2C bus, defaults to Master
   Serial.begin(SERIAL_BAUD_RATE);
   deltaPWM = (MAX_PWM - STOP) / NUM_TEST_POINTS;
   sampleTime = STEP_DURATION / SAMPLE_FREQUENCY;
@@ -80,6 +87,14 @@ void setup() {
 }
 
 void loop(){
+  Wire.beginTransmission();                      // transmit i2c to device master
+  Wire.write(i2c_info);                          // sends i2c information one byte at a time
+  Wire.endTransmission();                        // stop transmitting i2c information
+  i2c_info++;                                    // increment
+  if i2c_info>5 {
+    i2c_info=0                                   // reset to 0
+  }
+  
   bool startSwitch = readStartSwitchDebounced();
   if (awaitingStart) {
     if (startSwitch) {
@@ -144,7 +159,7 @@ bool readStartSwitchDebounced() {
 
 void resetTest() {
   currentPWM = STOP;
-  forwardThrust = true;
+  increasePWM = true;
 }
 
 void testThruster(long currentTime) {
@@ -159,20 +174,26 @@ void testThruster(long currentTime) {
     lastStepEndMillis = currentTime;
 
     // Move to next PWM
-    if (currentPWM >= MAX_PWM && forwardThrust) {
-      forwardThrust = false;
-    }
-    else if (currentPWM <= MIN_PWM) {
+    if (lastCycle && currentPWM >= 0)
+    {
+      lastCycle = false;
       testRunning = false;
       testEndMillis = millis();
       currentPWM = STOP;
       thruster.writeMicroseconds(STOP);
       delay(1000);
-      forwardThrust = true;
+      increasePWM = true;
       Serial.println(END_BYTES);
     }
+    else if (currentPWM >= MAX_PWM && increasePWM) {
+      increasePWM = false;
+    }
+    else if (currentPWM <= MIN_PWM) {
+      increasePWM = true;
+      lastCycle = true;
+    }
 
-    if (forwardThrust && testRunning) {
+    if (increasePWM && testRunning) {
       currentPWM += deltaPWM;
     }
     else {
